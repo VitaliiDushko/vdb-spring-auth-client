@@ -1,11 +1,30 @@
 package com.vdb.auth.client;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.http.Cookie;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.MediaType;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.oauth2.client.InMemoryOAuth2AuthorizedClientService;
+import org.springframework.security.oauth2.client.OAuth2AuthorizedClient;
+import org.springframework.security.oauth2.client.OAuth2AuthorizedClientService;
+import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
+import org.springframework.security.oauth2.client.registration.ClientRegistration;
+import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
+import org.springframework.security.oauth2.client.registration.InMemoryClientRegistrationRepository;
+import org.springframework.security.oauth2.client.web.*;
+import org.springframework.security.oauth2.core.AuthorizationGrantType;
+import org.springframework.security.oauth2.core.oidc.user.OidcUser;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.Map;
 
 import static org.springframework.security.config.Customizer.withDefaults;
 
@@ -16,7 +35,10 @@ import static org.springframework.security.config.Customizer.withDefaults;
 public class OAuth2ClientSecurityConfig {
 
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain filterChain(HttpSecurity http,
+                                           OAuth2AuthorizedClientService authorizedClientService,
+                                           LoggingFilter loggingFilter,
+                                           ClientRegistrationRepository clientRegistrationRepository) throws Exception {
 //        http
 //                .oauth2Client(oauth2 -> oauth2
 //                        .clientRegistrationRepository(this.clientRegistrationRepository())
@@ -29,11 +51,82 @@ public class OAuth2ClientSecurityConfig {
 //                        )
 //                );
         http
+                .addFilterBefore(loggingFilter, UsernamePasswordAuthenticationFilter.class)
                 .authorizeHttpRequests(authorize -> authorize
                         .anyRequest().authenticated()
                 )
-                .oauth2Login(withDefaults());
+                .oauth2Login(oauth2 -> oauth2
+                        .successHandler(successHandler(authorizedClientService))
+                        .authorizationEndpoint(authorization -> authorization
+                                .authorizationRequestResolver(authorizationRequestResolver(clientRegistrationRepository))  // Set custom resolver
+                        )
+                );
 
         return http.build();
+    }
+
+    @Bean
+    public AuthenticationSuccessHandler successHandler(OAuth2AuthorizedClientService authorizedClientService) {
+        return (request, response, authentication) -> {
+            OAuth2AuthenticationToken authToken = (OAuth2AuthenticationToken) authentication;
+            OAuth2AuthorizedClient authorizedClient = authorizedClientService
+                    .loadAuthorizedClient(authToken.getAuthorizedClientRegistrationId(), authToken.getName());
+
+            String accessToken = authorizedClient.getAccessToken().getTokenValue();
+            String refreshToken = authorizedClient.getRefreshToken() != null ? authorizedClient.getRefreshToken().getTokenValue() : null;
+            String idToken = ((OidcUser) authToken.getPrincipal()).getIdToken().getTokenValue(); // Retrieve the ID token if available
+            response.addCookie(createHttpOnlyCookie("access_token", accessToken, true));
+            response.addCookie(createHttpOnlyCookie("refresh_token", refreshToken, true));
+            response.addCookie(createHttpOnlyCookie("id_token", idToken, false));
+            // Handle state parameter
+            String state = request.getParameter("state");
+            if (state != null) {
+                try {
+                    // Decode the state parameter (assuming it's base64 encoded)
+                    String decodedState = new String(Base64.getDecoder().decode(state), StandardCharsets.UTF_8);
+
+                    // Extract customPage from the decoded JSON state
+                    ObjectMapper objectMapper = new ObjectMapper();
+                    Map<String, String> stateData = objectMapper.readValue(decodedState, Map.class);
+                    String customPage = stateData.get("customPage"); // The original page
+
+                    // Redirect to the original custom page
+                    if (customPage != null) {
+                        response.sendRedirect(customPage);
+                        return;  // Avoid redirecting twice
+                    }
+
+                } catch (IllegalArgumentException e) {
+                    // Handle invalid base64 input (e.g., log the error)
+                    System.out.println("Failed to decode state parameter: " + e.getMessage());
+                } catch (Exception e) {
+                    // Handle JSON parsing errors or other issues
+                    System.out.println("Failed to parse decoded state: " + e.getMessage());
+                }
+            }
+
+            // Fallback redirect if state is not present or decoding fails
+            response.sendRedirect("http://localhost:4200/seller/create-car");
+        };
+    }
+
+    private Cookie createHttpOnlyCookie(String name, String value, boolean isHttpOnly) {
+        Cookie cookie = new Cookie(name, value);
+        if (isHttpOnly) {
+            cookie.setHttpOnly(true);
+        }
+//        cookie.setSecure(true); // Enable in production (HTTPS only)
+        cookie.setPath("/");
+        cookie.setMaxAge(3600); // Set cookie expiration
+        return cookie;
+    }
+
+    @Bean
+    public OAuth2AuthorizationRequestResolver authorizationRequestResolver(ClientRegistrationRepository clientRegistrationRepository) {
+        DefaultOAuth2AuthorizationRequestResolver defaultResolver =
+                new DefaultOAuth2AuthorizationRequestResolver(clientRegistrationRepository, OAuth2AuthorizationRequestRedirectFilter.DEFAULT_AUTHORIZATION_REQUEST_BASE_URI);
+
+        // Return your custom resolver with the default resolver passed as a parameter
+        return new CustomAuthorizationRequestResolver(defaultResolver);
     }
 }
