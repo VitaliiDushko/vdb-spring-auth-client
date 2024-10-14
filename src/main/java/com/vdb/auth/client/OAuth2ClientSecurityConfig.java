@@ -2,6 +2,7 @@ package com.vdb.auth.client;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.Cookie;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.MediaType;
@@ -21,8 +22,12 @@ import org.springframework.security.oauth2.core.oidc.user.OidcUser;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Map;
 
@@ -52,6 +57,8 @@ public class OAuth2ClientSecurityConfig {
 //                );
         http
                 .addFilterBefore(loggingFilter, UsernamePasswordAuthenticationFilter.class)
+                .cors(c -> c.configurationSource(corsConfigurationSource())) // Enable CORS
+                .csrf(c -> c.disable()) // Disable CSRF if necessary
                 .authorizeHttpRequests(authorize -> authorize
                         .anyRequest().authenticated()
                 )
@@ -66,6 +73,21 @@ public class OAuth2ClientSecurityConfig {
     }
 
     @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration configuration = new CorsConfiguration();
+        configuration.setAllowedOrigins(Arrays.asList("http://app.localtest.me:4200",
+                "http://auth-server.localtest.me:9000"));
+        configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        configuration.setAllowedHeaders(Arrays.asList("Authorization", "Content-Type"));
+        configuration.setAllowCredentials(true);
+        configuration.setMaxAge(3600L);
+
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", configuration);
+        return source;
+    }
+
+    @Bean
     public AuthenticationSuccessHandler successHandler(OAuth2AuthorizedClientService authorizedClientService) {
         return (request, response, authentication) -> {
             OAuth2AuthenticationToken authToken = (OAuth2AuthenticationToken) authentication;
@@ -75,9 +97,11 @@ public class OAuth2ClientSecurityConfig {
             String accessToken = authorizedClient.getAccessToken().getTokenValue();
             String refreshToken = authorizedClient.getRefreshToken() != null ? authorizedClient.getRefreshToken().getTokenValue() : null;
             String idToken = ((OidcUser) authToken.getPrincipal()).getIdToken().getTokenValue(); // Retrieve the ID token if available
-            response.addCookie(createHttpOnlyCookie("access_token", accessToken, true));
-            response.addCookie(createHttpOnlyCookie("refresh_token", refreshToken, true));
-            response.addCookie(createHttpOnlyCookie("id_token", idToken, false));
+            addCookieWithSameSite(response, "access_token", accessToken, true);
+            addCookieWithSameSite(response, "refresh_token", refreshToken, true);
+            addCookieWithSameSite(response, "id_token", idToken, false);
+            response.setHeader("Access-Control-Allow-Origin", "http://app.localtest.me:4200");  // Or wildcard "*" for all origins
+            response.setHeader("Access-Control-Allow-Credentials", "true");  // Allow credentials to be sent
             // Handle state parameter
             String state = request.getParameter("state");
             if (state != null) {
@@ -106,19 +130,20 @@ public class OAuth2ClientSecurityConfig {
             }
 
             // Fallback redirect if state is not present or decoding fails
-            response.sendRedirect("http://localhost:4200/seller/create-car");
+            response.sendRedirect("http://app.localtest.me:4200/seller/create-car");
         };
     }
 
-    private Cookie createHttpOnlyCookie(String name, String value, boolean isHttpOnly) {
+    private void addCookieWithSameSite(HttpServletResponse response, String name, String value, boolean httpOnly) {
         Cookie cookie = new Cookie(name, value);
-        if (isHttpOnly) {
-            cookie.setHttpOnly(true);
-        }
-//        cookie.setSecure(true); // Enable in production (HTTPS only)
-        cookie.setPath("/");
-        cookie.setMaxAge(3600); // Set cookie expiration
-        return cookie;
+        cookie.setHttpOnly(httpOnly);
+        cookie.setPath("/");  // Ensure the path is correct
+        cookie.setMaxAge(3600); // Set expiration
+        cookie.setSecure(false);  // For development, set to true for HTTPS in production
+        cookie.setDomain("localtest.me");
+
+        // Add the cookie to the response
+        response.addCookie(cookie);
     }
 
     @Bean

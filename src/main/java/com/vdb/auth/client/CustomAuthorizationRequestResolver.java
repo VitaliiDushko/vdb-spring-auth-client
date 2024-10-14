@@ -1,5 +1,6 @@
 package com.vdb.auth.client;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.security.oauth2.client.web.OAuth2AuthorizationRequestResolver;
 import org.springframework.security.oauth2.core.endpoint.OAuth2AuthorizationRequest;
 import org.springframework.security.web.util.UrlUtils;
@@ -47,8 +48,14 @@ public class CustomAuthorizationRequestResolver implements OAuth2AuthorizationRe
         Map<String, String> customState = new HashMap<>();
         customState.put("springState", springGeneratedState);
         customState.put("customPage", customPage);
-
-        String combinedState = Base64.getEncoder().encodeToString(customState.toString().getBytes());
+        ObjectMapper objectMapper = new ObjectMapper();
+        String combinedState = springGeneratedState;
+        try {
+            combinedState = Base64.getEncoder().encodeToString(objectMapper.writeValueAsString(customState).getBytes());
+        } catch (Exception e) {
+            e.printStackTrace();
+            // Handle the error appropriately
+        }
 
         // Create a new OAuth2AuthorizationRequest with the combined state
         return OAuth2AuthorizationRequest.from(authorizationRequest)
